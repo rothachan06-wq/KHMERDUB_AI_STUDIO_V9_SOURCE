@@ -1,0 +1,73 @@
+name: Build KHMERDUB AI STUDIO PRO V8 (.EXE)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows-pro:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyTorch CUDA + AI Engines
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Bundle FFmpeg + FFprobe into bin/
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "bin"
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg_tmp" -Force
+          Copy-Item (Get-ChildItem -Path "ffmpeg_tmp" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).FullName -Destination "bin\ffmpeg.exe"
+          Copy-Item (Get-ChildItem -Path "ffmpeg_tmp" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1).FullName -Destination "bin\ffprobe.exe"
+          Remove-Item "ffmpeg.zip", "ffmpeg_tmp" -Recurse -Force
+
+      - name: Run Automated Functional Tests
+        run: |
+          pytest -v tests
+
+      - name: Build Windows Executable (Including CUDA DLLs)
+        shell: cmd
+        run: |
+          pyinstaller --noconfirm --onedir --windowed ^
+            --add-data "bin;bin" ^
+            --collect-all PySide6.QtMultimedia ^
+            --collect-all PySide6.QtMultimediaWidgets ^
+            --collect-all torch ^
+            --collect-all torchaudio ^
+            --collect-all voxcpm ^
+            --collect-all pyannote.audio ^
+            --collect-all faster_whisper ^
+            --hidden-import edge_tts ^
+            --hidden-import soundfile ^
+            --name "KHMERDUB_AI_STUDIO_PRO" main.py
+
+      - name: Copy CUDA cublas & cudnn DLLs into _internal
+        shell: pwsh
+        run: |
+          $torchLib = python -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))"
+          Copy-Item "$torchLib\cublas*.dll" -Destination "dist\KHMERDUB_AI_STUDIO_PRO\_internal\" -Force -ErrorAction SilentlyContinue
+          Copy-Item "$torchLib\cudnn*.dll" -Destination "dist\KHMERDUB_AI_STUDIO_PRO\_internal\" -Force -ErrorAction SilentlyContinue
+
+      - name: Verify EXE Output
+        shell: cmd
+        run: |
+          if not exist "dist\KHMERDUB_AI_STUDIO_PRO\KHMERDUB_AI_STUDIO_PRO.exe" exit /b 1
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KHMERDUB_AI_STUDIO_PRO_V8_Win64
+          path: dist/KHMERDUB_AI_STUDIO_PRO
